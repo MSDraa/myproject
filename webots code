@@ -1,1 +1,142 @@
+from controller import Robot
+import cv2
+import numpy as np
+import os
+
+robot = Robot()
+print("Robot running!!")
+time_step = int(robot.getBasicTimeStep())
+
+# Motors
+left_motor = robot.getDevice('left wheel motor')
+right_motor = robot.getDevice('right wheel motor')
+left_motor.setPosition(float('inf'))
+right_motor.setPosition(float('inf'))
+left_motor.setVelocity(4.0)
+right_motor.setVelocity(4.0)
+
+# Distance sensors
+distance_sensors = []
+sensor_names = ['ps0', 'ps1', 'ps2', 'ps3', 'ps4', 'ps5', 'ps6', 'ps7']
+for name in sensor_names:
+    sensor = robot.getDevice(name)
+    sensor.enable(time_step)
+    distance_sensors.append(sensor)
+
+# Camera
+camera = robot.getDevice('camera')
+camera.enable(time_step)
+
+seen_colours = set()
+obstacle_threshold = 80
+obstacle_detected_last = False
+step_counter = 0
+
+# Horse detection flags and paths
+horse_saved = False
+save_dir = os.path.dirname(__file__)
+save_path = os.path.join(save_dir, "horse_detected.png")
+
+while robot.step(time_step) != -1:
+    step_counter += 1
+    distances = [sensor.getValue() for sensor in distance_sensors]
+
+    # Capture camera image
+    image = camera.getImage()
+    width = camera.getWidth()
+    height = camera.getHeight()
+
+    # Convert to BGR
+    img_bgra = np.frombuffer(image, dtype=np.uint8).reshape((height, width, 4))
+    img_bgr = cv2.cvtColor(img_bgra, cv2.COLOR_BGRA2BGR)
+
+    # Calculate average color
+    avg_b, avg_g, avg_r = np.mean(img_bgr, axis=(0, 1))
+    print(f"Step {step_counter}: Avg Color - R: {avg_r:.1f}, G: {avg_g:.1f}, B: {avg_b:.1f}")
+
+    # Save debug images every 20 steps (until horse is detected)
+    if step_counter % 20 == 0 and not horse_saved:
+        debug_path = os.path.join(save_dir, f"frame_{step_counter}.png")
+        cv2.imwrite(debug_path, img_bgr)
+        print(f"Debug image saved: {debug_path}")
+
+    # Horse detection (white object detection)
+    if not horse_saved:
+        if avg_r > 200 and avg_g > 200 and avg_b > 200:
+            print("Horse-like object detected (white color)!")
+            resized = cv2.resize(img_bgr, (32, 32))
+            cv2.imwrite(save_path, resized)
+            print(f"Horse image saved at: {save_path}")
+            horse_saved = True
+
+    # Colour detection logic (unchanged)
+    x = width // 2
+    y = height // 2
+    sample_points = [(x, y), (x-10, y), (x+10, y), (x, y-10), (x, y+10)]
+
+    r_total = g_total = b_total = 0
+    valid_samples = 0
+    for px, py in sample_points:
+        if 0 <= px < width and 0 <= py < height:
+            b, g, r = img_bgr[py, px]
+            r_total += int(r)
+            g_total += int(g)
+            b_total += int(b)
+            valid_samples += 1
+
+    if valid_samples > 0:
+        r = r_total // valid_samples
+        g = g_total // valid_samples
+        b = b_total // valid_samples
+    else:
+        r = g = b = 0
+
+    detected_colour = None
+    if r > 150 and g < 100 and b < 100:
+        detected_colour = 'red'
+    elif g > 150 and r < 100 and b < 100:
+        detected_colour = 'green'
+    elif b > 150 and r < 100 and g < 100:
+        detected_colour = 'blue'
+
+    if not detected_colour:
+        max_rgb = max(r, g, b)
+        if max_rgb > 100:
+            if r == max_rgb and r > g + 30 and r > b + 30:
+                detected_colour = 'red'
+            elif g == max_rgb and g > r + 30 and g > b + 30:
+                detected_colour = 'green'
+            elif b == max_rgb and b > r + 30 and b > g + 30:
+                detected_colour = 'blue'
+
+    if not detected_colour:
+        if r > 50 and r > g and r > b:
+            detected_colour = 'red'
+        elif g > 50 and g > r and g > b:
+            detected_colour = 'green'
+        elif b > 50 and b > r and b > g:
+            detected_colour = 'blue'
+
+    if detected_colour and detected_colour not in seen_colours:
+        print(f"I see {detected_colour}")
+        seen_colours.add(detected_colour)
+        print("Colours identified: " + ", ".join(seen_colours))
+        print(f"Summary - Colors found: {len(seen_colours)}/3 - {', '.join(seen_colours)}")
+        if len(seen_colours) == 3:
+            print("All colors are detected!")
+            print("Resetting color detection...")
+            seen_colours.clear()
+
+    # Obstacle avoidance
+    front_obstacle = any(sensor_value > obstacle_threshold for sensor_value in distances)
+    if front_obstacle:
+        if not obstacle_detected_last:
+            print("Obstacle detected, turning...")
+        obstacle_detected_last = True
+        left_motor.setVelocity(4.0)
+        right_motor.setVelocity(-4.0)
+    else:
+        obstacle_detected_last = False
+        left_motor.setVelocity(5.0)
+        right_motor.setVelocity(5.0)
 
